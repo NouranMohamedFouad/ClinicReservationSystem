@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"log"
@@ -68,7 +69,6 @@ func signUp(name string, password string, userTyp string, ctx context.Context) e
 
 	//////////////////////////////////////////////////////////////////////////////////////
 	//to print only the date , time ,and doctor name
-
 	usersCollection := client.Database("Clinic").Collection("Users")
 	existingUser := usersCollection.FindOne(ctx, bson.M{"username": name})
 	if existingUser.Err() == nil {
@@ -87,6 +87,19 @@ func signUp(name string, password string, userTyp string, ctx context.Context) e
 		return err
 	}
 
+	if newUser.UserType == "patient" {
+		patientsCollection := client.Database("Clinic").Collection("Patients")
+		_, err = patientsCollection.InsertOne(ctx, bson.M{"name": newUser.Username})
+		if err != nil {
+			return err
+		}
+	} else if newUser.UserType == "doctor" {
+		doctorsCollection := client.Database("Clinic").Collection("Doctors")
+		_, err = doctorsCollection.InsertOne(ctx, bson.M{"name": newUser.Username})
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -112,7 +125,7 @@ func setSchedule(DocName string, date string, timee string, number string, ctx c
 		{"date", date},
 		{"time", timee},
 		{"contactNumber", number},
-		{"isAvailable", true},
+		{"isAvailable", "true"},
 	}
 	_, err = doctorsCollection.InsertOne(context.Background(), document)
 	if err != nil {
@@ -177,7 +190,144 @@ func reserveAppointment(DoctorName string, selectedSlotdate string, selectedSlot
 }
 
 // ///////////////////////////////////////////////////////////////////////////////////////
-//fun update appointment
+func updateAppointmentDoctor(PatientName string, oldDocName string, newDocName string, selectedSlotdate string, selectedSlotTime string, oldselectedSlotdate string, oldselectedSlotTime string, ctx context.Context) error {
+
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(URL))
+	if err != nil {
+		panic(err)
+	}
+
+	defer func() {
+		err := client.Disconnect(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}()
+	//part 1 is to make the availability to false
+	doctorsCollection := client.Database("Clinic").Collection("Doctors")
+	appointmentsCollection := client.Database("Clinic").Collection("Appointments")
+
+	filter := bson.M{
+		"name":        newDocName,
+		"date":        selectedSlotdate,
+		"time":        selectedSlotTime,
+		"isAvailable": "true",
+	}
+	update := bson.M{
+		"$set": bson.M{"isAvailable": "false"},
+	}
+	updateResult, err := doctorsCollection.UpdateOne(ctx, filter, update)
+
+	if err != nil {
+		fmt.Println("Failed to update slot availability:", err)
+		return err
+	}
+	// return old slot  to true. make is available to true again
+
+	filterOldApp := bson.M{
+		"name":        oldDocName,
+		"date":        oldselectedSlotdate,
+		"time":        oldselectedSlotTime,
+		"isAvailable": "false",
+	}
+	fmt.Println("Filter:", filterOldApp)
+	update = bson.M{
+		"$set": bson.M{"isAvailable": "true"},
+	}
+	updateResult, err = doctorsCollection.UpdateOne(ctx, filterOldApp, update)
+	fmt.Println("Update:", update)
+	if err != nil {
+		fmt.Println("Failed to update slot availability:", err)
+		return err
+	}
+	// update appoitments in appoitments collection
+	update = bson.M{
+		"$set": bson.M{"doctorName": newDocName, "date": selectedSlotdate, "time": selectedSlotTime},
+	}
+	updateResult, err = appointmentsCollection.UpdateOne(ctx, bson.M{"patientName": PatientName, "date": oldselectedSlotdate, "time": oldselectedSlotTime}, update)
+	if err != nil {
+		fmt.Println("Failed to update appointment:", err)
+		return err
+	}
+	if updateResult.ModifiedCount == 0 {
+		fmt.Println("No appointment updated.")
+		return err
+	} else {
+		fmt.Println("Appointment updated successfully.")
+		return err
+	}
+	return nil
+}
+
+// ///////////////////////////////////////////////////////////////////////////////////////
+func updateAppointmentSlot(DocName string, selectedSlotdate string, selectedSlotTime string, oldselectedSlotdate string, oldselectedSlotTime string, ctx context.Context) error {
+
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(URL))
+	if err != nil {
+		panic(err)
+	}
+
+	defer func() {
+		err := client.Disconnect(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}()
+
+	doctorsCollection := client.Database("Clinic").Collection("Doctors")
+	appointmentsCollection := client.Database("Clinic").Collection("Appointments")
+	//************************************************************************************************************
+	// update new slot in appointment
+	update := bson.M{
+		"$set": bson.M{"date": selectedSlotdate, "time": selectedSlotTime},
+	}
+	updateResult, err := appointmentsCollection.UpdateOne(ctx, bson.M{"doctorName": DocName, "date": oldselectedSlotdate, "time": oldselectedSlotTime}, update)
+	if err != nil {
+		fmt.Println("Failed to update appointment:", err)
+		return err
+	}
+	if updateResult.ModifiedCount == 0 {
+		fmt.Println("No appointment updated.")
+	} else {
+		fmt.Println("Appointment updated successfully.")
+	}
+	//************************************************************************************************************
+	// return old slot of old to true. make is available to true again
+	filterNew := bson.M{
+		"name":        DocName,
+		"date":        oldselectedSlotdate,
+		"time":        oldselectedSlotTime,
+		"isAvailable": "false",
+	}
+	fmt.Println("Filter:", filterNew)
+	update = bson.M{
+		"$set": bson.M{"isAvailable": "true"},
+	}
+	updateResult, err = doctorsCollection.UpdateOne(ctx, filterNew, update)
+	fmt.Println("Update:", update)
+	if err != nil {
+		fmt.Println("Failed to update slot availability:", err)
+		return err
+	}
+	//*************************************************************************************************************
+	// update state of new doc from is available =true to false
+	filter := bson.M{
+		"name":        DocName,
+		"date":        selectedSlotdate,
+		"time":        selectedSlotTime,
+		"isAvailable": "true",
+	}
+	update = bson.M{
+		"$set": bson.M{"isAvailable": "false"},
+	}
+	updateResult, err = doctorsCollection.UpdateOne(ctx, filter, update)
+	if err != nil {
+		fmt.Println("Failed to update slot availability:", err)
+		return err
+	}
+	///////////////
+	return nil
+}
 
 // ///////////////////////////////////////////////////////////////////////////////////////
 func viewAllReservations(patientName string, ctx context.Context) ([]bson.M, error) {
@@ -246,7 +396,7 @@ func cancelAppointment(patientName string, doctorName string, date string, time 
 		ctx,
 		bson.M{"name": doctorName, "date": date, "time": time},
 		bson.D{
-			{"$set", bson.M{"isAvailaible": "true"}},
+			{"$set", bson.M{"isAvailable": "true"}},
 		})
 
 	fmt.Printf("%v Reservations Cancelled Successfully", deleted.DeletedCount)
@@ -321,7 +471,14 @@ func main() {
 
 	case 1:
 		//sign in
-		userType, err := signIn("Nouran Mohamed", "54321", ctx)
+		var name string
+		fmt.Print("Enter the  username : ")
+		fmt.Scan(&name)
+		var pass string
+		fmt.Print("Enter the password : ")
+		fmt.Scan(&pass)
+
+		userType, err := signIn(name, pass, ctx)
 		if err != nil {
 			fmt.Println("Error signing in:", err)
 		} else {
@@ -330,7 +487,17 @@ func main() {
 
 	case 2:
 		//sign up
-		err := signUp("Nouran Mohamed", "54321", "patient", ctx)
+		var name string
+		fmt.Print("Enter the  username : ")
+		fmt.Scan(&name)
+		var pass string
+		fmt.Print("Enter the password : ")
+		fmt.Scan(&pass)
+		var typee string
+		fmt.Print("Enter the type : ")
+		fmt.Scan(&typee)
+
+		err := signUp(name, pass, typee, ctx)
 		if err != nil {
 			fmt.Println("Error in signing up,This Username Already Exists")
 		} else {
@@ -343,16 +510,18 @@ func main() {
 		var DocName string
 		fmt.Print("enter doc name ")
 		fmt.Scan(&DocName)
+		fmt.Print("enter contact number ")
 		var number string
+		fmt.Scan(&number)
 		fmt.Print("enter date ")
-		var date string
+		var datee string
 		fmt.Print("enter date ")
-		fmt.Scan(&date)
+		fmt.Scan(&datee)
 		var timee string
 		fmt.Print("enter time ")
 		fmt.Scan(&timee)
 
-		_, err := time.Parse(dateLayout, date)
+		_, err := time.Parse(dateLayout, datee)
 		if err != nil {
 			fmt.Println("Invalid date format:", err)
 			return
@@ -363,7 +532,7 @@ func main() {
 			return
 		}
 
-		errorr := setSchedule(DocName, date, timee, number, ctx)
+		errorr := setSchedule(DocName, datee, timee, number, ctx)
 		if errorr != nil {
 			fmt.Println("Failed to insert document into Database:", err)
 		} else {
@@ -372,6 +541,8 @@ func main() {
 		}
 
 	case 4:
+		//Patients select doctor, view his available slots, then patient chooses a slot.-----------------------------------
+
 		client, err := mongo.Connect(ctx, options.Client().ApplyURI(URL))
 		if err != nil {
 			panic(err)
@@ -431,10 +602,155 @@ func main() {
 		///////////////////////////////////////
 
 	case 5:
+		client, err := mongo.Connect(ctx, options.Client().ApplyURI(URL))
+		if err != nil {
+			panic(err)
+		}
+
+		defer func() {
+			err := client.Disconnect(ctx)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}()
+		var patientName string
+		fmt.Print("Enter the patient name : ")
+		fmt.Scan(&patientName)
+		var dateee string
+		fmt.Print("Enter the date : ")
+		fmt.Scan(&dateee)
+
+		var timee string
+		fmt.Print("Enter the time : ")
+		fmt.Scan(&timee)
+		// Query the MongoDB collection to find the patient's appointment
+		Newfilter := bson.M{
+			"patientName": patientName,
+			"date":        dateee,
+			"time":        timee}
+
+		var Oldappointment struct {
+			ID          primitive.ObjectID `bson:"_id,omitempty"`
+			Doctor      string             `bson:"doctorName"`
+			Date        string             `bson:"date"`
+			Time        string             `bson:"time"`
+			PatientName string             `bson:"patientName"`
+		}
+		appointmentsCollection := client.Database("Clinic").Collection("Appointments")
+
+		err = appointmentsCollection.FindOne(ctx, Newfilter).Decode(&Oldappointment)
+		if err != nil {
+			fmt.Println("Appointment not found:", err)
+			return
+		}
+		fmt.Printf("Your current appointment: Doctor: %s, date: %s, time: %s", Oldappointment.Doctor, Oldappointment.Date, Oldappointment.Time)
+
+		// Ask the patient what they want to update
+		fmt.Println("What would you like to update?")
+		fmt.Println("1. Doctor")
+		fmt.Println("2. Slot")
+		fmt.Print("Enter your choice (1 or 2): ")
+		var choice int
+		fmt.Scan(&choice)
+		doctorsCollection := client.Database("Clinic").Collection("Doctors")
+		var selectedSlotTime string
+		var selectedSlotdate string
+		if choice == 1 {
+			var newDoctorName string
+			fmt.Print("Enter the new doctor's name: ")
+			fmt.Scan(&newDoctorName)
+
+			// reserve new slot for new doctor and return all available slot
+			// check on available slot of this doctor and return all available slot
+			availableSlots, err := getAvailableSlots(ctx, doctorsCollection, newDoctorName)
+			if err != nil {
+				fmt.Println("Failed to get available slots:", err)
+				return
+			}
+
+			fmt.Println("Available slots for", newDoctorName, ":")
+			for _, slot := range availableSlots {
+				fmt.Println(slot)
+			}
+			//*****************************************************
+
+			fmt.Print("Choose a date&time: ")
+			fmt.Scan(&selectedSlotdate, &selectedSlotTime)
+			_, err = time.Parse(timeLayout, selectedSlotTime)
+			_, err = time.Parse(dateLayout, selectedSlotdate)
+			if err != nil {
+				fmt.Println("Invalid date format:", err)
+				return
+			}
+			if err != nil {
+				fmt.Println("Invalid time format:", err)
+				return
+			}
+			errorr := updateAppointmentDoctor(patientName, Oldappointment.Doctor, newDoctorName, selectedSlotdate, selectedSlotTime, Oldappointment.Date, Oldappointment.Time, ctx)
+			if errorr != nil {
+				fmt.Println("Failed to update the Appointment:", err)
+			} else {
+				fmt.Println("Appointment updated the doctor Successfully.")
+			}
+		} else if choice == 2 {
+			// find available slot of old doctor then choose it
+			availableSlots, err := getAvailableSlots(ctx, doctorsCollection, Oldappointment.Doctor)
+			if err != nil {
+				fmt.Println("Failed to get available slots:", err)
+				return
+			}
+
+			fmt.Println("Available slots for", Oldappointment.Doctor, ":")
+			for _, slot := range availableSlots {
+				fmt.Println(slot)
+			}
+			fmt.Print("Choose a date&time: ")
+
+			fmt.Scan(&selectedSlotdate, &selectedSlotTime)
+			_, err = time.Parse(timeLayout, selectedSlotTime)
+			_, err = time.Parse(dateLayout, selectedSlotdate)
+			if err != nil {
+				fmt.Println("Invalid date format:", err)
+				return
+			}
+			if err != nil {
+				fmt.Println("Invalid time format:", err)
+				return
+			}
+			//*********************************************************
+			// Check if the new slot is available
+			if !isSlotAvailable(selectedSlotdate, selectedSlotTime, availableSlots) {
+				fmt.Println("Slot is not available.")
+				return
+			}
+
+			errorr := updateAppointmentSlot(Oldappointment.Doctor, selectedSlotdate, selectedSlotTime, Oldappointment.Date, Oldappointment.Time, ctx)
+			if errorr != nil {
+				fmt.Println("Failed to update the Appointment:", err)
+			} else {
+				fmt.Println("Appointment updated the doctor Successfully.")
+			}
+
+		} else {
+			fmt.Println("Invalid choice. Please enter 1 or 2.")
+		}
 
 	case 6:
 		// Call the function to cancel appointment
-		err := cancelAppointment("Janna Fattouh", "Dr.Amira", "2023-10-10", "10:00 AM", ctx)
+		var patientName string
+		fmt.Print("Enter the patient name : ")
+		fmt.Scan(&patientName)
+		var docName string
+		fmt.Print("Enter the doctor name : ")
+		fmt.Scan(&docName)
+		var datee string
+		fmt.Print("Enter the date : ")
+		fmt.Scan(&datee)
+		var timee string
+		fmt.Print("Enter the date : ")
+		fmt.Scan(&timee)
+
+		err := cancelAppointment(patientName, docName, datee, timee, ctx)
 		if err != nil {
 			fmt.Println("Error cancelling appointment:", err)
 		} else {
@@ -443,12 +759,15 @@ func main() {
 
 	case 7:
 		// Call the function to view all reservations
-		reservations, err := viewAllReservations("Janna Fattouh", ctx)
+		var patientName string
+		fmt.Print("Enter the patient Name : ")
+		fmt.Scan(&patientName)
+		reservations, err := viewAllReservations(patientName, ctx)
 		if err != nil {
 			fmt.Println("Error viewing reservations:", err)
 		} else {
 			for _, r := range reservations {
-				fmt.Println("Name:", r["doctorName"], "Date:", r["date"], "Time:", r["time"])
+				fmt.Println("Doctor Name:", r["doctorName"], "Date:", r["date"], "Time:", r["time"])
 			}
 		}
 	}
