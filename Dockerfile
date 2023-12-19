@@ -6,7 +6,9 @@ RUN chmod 777 -R /app
 # Add the node_modules bin to the PATH
 ENV PATH /app/node_modules/.bin:$PATH
 # Copy package.json and package-lock.json
-COPY *.json /app/
+COPY package.json /app/
+COPY package-lock.json /app/
+
 # Install npm dependencies
 RUN npm install
 # Install react-scripts globally
